@@ -50,6 +50,10 @@ The shipped run config (`strata-qwen25-7b-1m.json`) holds the model, the context
 | `kv_bits` | KV cache bits: `8` (default), `4`, or `null` for fp16 |
 | `quantized_kv_start` | quantize the KV only from this step on (default 4096) |
 | `prefill_step_size` | prompt tokens processed per step: smaller = lower peak memory |
+| `warmup` | run one short generation at startup so the first chat is fast (default `false`; the examples set `true`) |
+
+The model loads at startup (before the web app answers), so the first request does not pay for loading it.  With
+`warmup` it also pays MLX's one-time Metal kernel compilation up front.
 
 On a 16 GB Mac, **KV 8-bit at about 128K is the quality-usable ceiling**; `strata-qwen25-7b-1m-256k.json` (256K at
 KV 4-bit) fits the memory but we measured it to degrade answers. A long prompt is read once and the KV of the

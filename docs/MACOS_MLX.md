@@ -57,7 +57,11 @@ A JSON file passed with `--config`.  Keys:
 | `kv_group_size` | KV quantization group size (default 64) |
 | `quantized_kv_start` | quantize the KV only from this step on (default 4096; keeps the first tokens exact) |
 | `prefill_step_size` | prompt tokens processed per step: smaller = lower peak memory |
+| `warmup` | one short generation at startup, so MLX compiles its Metal kernels and allocates the KV/workspace then instead of on the first chat (default `false`; the shipped configs set `true`) |
 | `model_name`, `aliases`, `host`, ... | as for the other engines |
+
+The model is loaded at startup (before the server answers), so there is no lazy first request; `warmup` only moves
+the one-time kernel compilation off the first chat.
 
 ## What works, what does not
 

@@ -283,6 +283,27 @@ def _apply_rope_scaling(model, scaling) -> None:
         print(f"[strata] could not apply rope_scaling {scaling!r}: {e}", flush=True)
 
 
+def _warmup(engine, tok) -> None:
+    """One short generation at startup, so MLX compiles its Metal kernels and allocates the KV/workspace now,
+    instead of on the first chat (whose first token is otherwise much slower).  A failure is a warning, never a
+    start failure, and the engine's cache is reset afterwards so the first real request is unaffected."""
+    import threading
+    import time
+    started = time.monotonic()
+    try:
+        ids = tok.encode("Warm up the model before the first request.", parse_special=False)
+        for _ in engine.generate(ids, 1, {"temperature": 0.0}, threading.Event()):
+            pass
+        engine.reset()
+        print(f"[strata] warmup: kernels ready in {time.monotonic() - started:.1f}s", flush=True)
+    except Exception as e:                       # noqa: BLE001 - a warmup must never stop the server
+        print(f"[strata] warmup skipped: {e}", flush=True)
+        try:
+            engine.reset()
+        except Exception:                        # noqa: BLE001
+            pass
+
+
 def create_backend(config: dict, *, metal: bool = True) -> BackendBundle:
     if metal and (platform.system() != "Darwin" or platform.machine() not in ("arm64", "aarch64")):
         raise ValueError("the MLX backend requires Apple Silicon (native arm64 macOS)")
@@ -318,4 +339,6 @@ def create_backend(config: dict, *, metal: bool = True) -> BackendBundle:
     tok = HFTokenizer(hf_tok)
     template = MlxTemplate(hf_tok, source)
     stops = _stop_ids(hf_tok)
+    if config.get("warmup", False):
+        _warmup(engine, tok)
     return BackendBundle(engine, tok, template, stops)
