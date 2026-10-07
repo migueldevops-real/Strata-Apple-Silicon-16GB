@@ -100,8 +100,8 @@ let health = {model: "strata", images: false, max_context: 0};
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
-    $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
-                                          : "Attach a text file (or drop it here)";
+    $("attach-btn").title = health.images ? "Attach a text file, a PDF or a picture (or drop it here)"
+                                          : "Attach a text file or a PDF (or drop it here)";
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -906,7 +906,25 @@ function addFiles(files) {
       r.readAsDataURL(f);
       continue;
     }
-    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files (code, notes, logs, data)${health.images ? " or pictures" : ""}.`); continue; }
+    if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) {
+      if (f.size > 25e6) { toast("warn", "PDF too large", `${f.name} is over 25 MB.`); continue; }
+      const r = new FileReader();
+      r.onload = async () => {
+        try {
+          const b64 = String(r.result).split(",", 2)[1] || "";
+          const resp = await fetch("v1/extract", {method: "POST", headers: headers(true),
+                                                  body: JSON.stringify({name: f.name, data: b64})});
+          if (!resp.ok) { let m = `HTTP ${resp.status}`; try { m = (await resp.json()).error.message || m; } catch (e) {} throw new Error(m); }
+          const d = await resp.json();
+          if (!d.text) { toast("warn", "No text in the PDF", `${f.name}: ${d.note || "no text found"}.`); return; }
+          attachments.push({kind: "file", name: `${f.name}${d.pages ? " (" + d.pages + " pages)" : ""}`, text: d.text});
+          renderAttachments();
+        } catch (e) { toast("warn", "Could not read the PDF", String((e && e.message) || e)); }
+      };
+      r.readAsDataURL(f);
+      continue;
+    }
+    if (!isTextFile(f)) { toast("warn", "Not a text file", `${f.name}: attach text files, a PDF${health.images ? " or a picture" : ""}.`); continue; }
     if (f.size > MAX_TEXT_FILE) { toast("warn", "File too large", `${f.name} is over 512 KB.`); continue; }
     const r = new FileReader();
     r.onload = () => {
@@ -922,11 +940,19 @@ function addFiles(files) {
 function fileBlock(f) {
   const longest = Math.max(2, ...(f.text.match(/`+/g) || []).map((s) => s.length));
   const fence = "`".repeat(longest + 1);
-  return `File: ${f.name}\n${fence}\n${f.text}\n${fence}`;
+  return `Attached document "${f.name}":\n${fence}\n${f.text}\n${fence}`;
 }
 function userText(m) {
   const files = (m.files || []).filter((f) => f.text != null);
-  return [m.text, ...files.map(fileBlock)].filter((s) => s).join("\n\n");
+  const parts = [m.text, ...files.map(fileBlock)];
+  if (files.length) {
+    // documents accumulate across the conversation; the newest attachment is "this document" when a question is
+    // ambiguous, so the model does not answer from an earlier one (e.g. two documents both holding a code).
+    parts.push('(The document(s) above are added to this conversation; use the whole conversation as context. ' +
+               'When a question does not name a document and says "this document" or "the document", it means the ' +
+               'most recently attached one.)');
+  }
+  return parts.filter((s) => s).join("\n\n");
 }
 function renderAttachments() {
   const box = $("attachments");

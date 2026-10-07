@@ -58,6 +58,7 @@ from serve.frontend import (ChatTemplate, Event, OutputParser, anthropic_to_mess
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
+from serve.extract import MAX_EXTRACT_BYTES  # noqa: E402
 from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
@@ -2808,7 +2809,12 @@ class Service:
             combined = combined_embeddings_path(self.vision.dir, sum(Path(p).stat().st_size for p, _ in encoded))
             self.embeddings.path = combined             # first, so a half-written one is found as well
             write_temporary(combined, [p for p, _ in encoded])
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        thinking = kwargs.get("enable_thinking", True) is not False
+        if hasattr(self.template, "starts_in_reasoning"):
+            # a backend whose model brings its own template (e.g. mlx): the rendered prompt's own markers decide
+            # whether the answer starts inside `reasoning` (Qwen2.5: never; a thinking model: when it opened one)
+            thinking = self.template.starts_in_reasoning(self.render_prompt(messages, tools, kwargs))
+        return ids, thinking, max_new
 
     def drop_embeddings(self) -> None:
         """Delete the combined image file prepare() wrote when no run() took it over (a run deletes its own as it
@@ -3587,7 +3593,10 @@ def make_handler(svc: Service):
         DRAIN_SECONDS = 5                                   # the longest an unread body is read and dropped
 
         def log_message(self, fmt, *args):
-            pass
+            # quiet by default; STRATA_ACCESS_LOG=1 prints every request line + status (diagnosing a 404 from a
+            # browser or a client: it says whether the request even reached this server, and on which path)
+            if os.environ.get("STRATA_ACCESS_LOG"):
+                print(f"[strata] {self.address_string()} {fmt % args}", flush=True)
 
         def handle_one_request(self):
             super().handle_one_request()
@@ -3887,6 +3896,9 @@ def make_handler(svc: Service):
             if path == "/config":
                 self._config_post()
                 return
+            if path == "/v1/extract":                        # a PDF's text, for the web app's attach button
+                self._extract()
+                return
             if path in ("/unload", "/load") and not self._control_body():
                 return
             # JSON from Strata's own page only, as /settings: else a plain form POST from any site unloads the model
@@ -4066,6 +4078,45 @@ def make_handler(svc: Service):
                                                       f"config's trusted_origins)"}})
                 return False
             return True
+
+        def _extract(self):
+            """POST /v1/extract {"name": ..., "data": "<base64|data-url>"} -> {"text", "pages", "chars", "note"}.
+            Strata's own page uses it to attach a PDF as text; JSON and same-origin, as /settings."""
+            if not self._own_page("a document can be read"):
+                return
+            try:
+                req = json.loads(self._body() or b"{}")
+            except ValueError as e:
+                self._json(400, {"error": {"message": f"bad JSON: {e}"}})
+                return
+            if not isinstance(req, dict):
+                self._json(400, {"error": {"message": "send a JSON object"}})
+                return
+            name = req.get("name") or "document"
+            data = req.get("data") or ""
+            if isinstance(data, str) and data.startswith("data:"):
+                data = data.split(",", 1)[-1]
+            try:
+                raw = base64.b64decode(data if isinstance(data, str) else "", validate=False)
+            except (ValueError, TypeError) as e:
+                self._json(400, {"error": {"message": f"bad base64 data ({e})"}})
+                return
+            if not raw:
+                self._json(400, {"error": {"message": "no file data was sent"}})
+                return
+            if len(raw) > MAX_EXTRACT_BYTES:
+                self._json(413, {"error": {"message": f"the file is over {MAX_EXTRACT_BYTES // (1024 * 1024)} MB"}})
+                return
+            try:
+                from serve.extract import extract_text
+                out = extract_text(str(name), raw)
+            except ImportError as e:
+                self._json(501, {"error": {"message": str(e)}})
+                return
+            except ValueError as e:
+                self._json(400, {"error": {"message": str(e)}})
+                return
+            self._json(200, out)
 
         def _config_get(self):
             if not svc.config_path:
@@ -4748,7 +4799,9 @@ def sampling_defaults_from_config(cfg: dict) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
+    from serve.backends import backend_names, load_backend   # in-process backend plugins (e.g. mlx on Apple Silicon)
+    plugin_names = backend_names()
+    ap.add_argument("--engine", choices=["mock", "strata", *plugin_names], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
     ap.add_argument("--host", default=None,
@@ -4812,7 +4865,18 @@ def main() -> int:
         types = json.loads((tpath / "token_type.json").read_text())
         tok = ST.Tokenizer(tokens, merges, types)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
-    if a.engine == "strata":
+    bundle = None
+    if a.engine in plugin_names:
+        # an in-process backend (e.g. mlx): it hands back its own engine, tokenizer, chat template and stop ids
+        try:
+            bundle = load_backend(a.engine, cfg)
+        except ValueError as e:
+            ap.error(str(e))
+        except Exception as e:                          # a load failure (no model, no mlx-lm): a clean stop, not a trace
+            ap.error(f"the {a.engine} backend could not start: {e}")
+        engine, tok, vision, sampling_defaults, effort_end = bundle.engine, bundle.tokenizer, None, {}, None
+        print(f"[strata] backend: {a.engine} ({engine.info.get('version') or '?'})", flush=True)
+    elif a.engine == "strata":
         if not cfg:
             ap.error("--engine strata needs --config")
         vision = None
@@ -4863,12 +4927,16 @@ def main() -> int:
         effort_end = None
         engine, vision, sampling_defaults = MockEngine(tok, a.script or [
             "Thinking about it.</think>\n\nHello from the mock engine."]), None, {}
-    # the model's own chat template (exported with its tokenizer), else the original model's
+    # the model's own chat template (exported with its tokenizer), else the original model's; a backend bundle
+    # brings its model's own template with it
     tpl = tpath / "chat_template.jinja"
-    svc = Service(engine, tok, ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
+    svc = Service(engine, tok, bundle.template if bundle else
+                  ChatTemplate(tpl if tpl.exists() else ROOT / "serve/chat_template.jinja"),
                   model_name=cfg.get("model_name", "qwen3.8-flash-next"), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or cfg.get("fit_max_tokens") is True)
+    if bundle:
+        svc.stop_ids = bundle.stop_ids
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
     except ValueError as e:

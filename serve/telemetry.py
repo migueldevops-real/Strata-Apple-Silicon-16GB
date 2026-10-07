@@ -182,9 +182,53 @@ class _Amd:
         return out
 
 
+class _Apple:
+    """Apple Silicon: the MLX runtime's own numbers, because macOS exposes no NVIDIA-style counters without
+    `powermetrics` (which needs sudo).  `mem_used` is MLX's live + pooled memory (the model's weights, the KV cache
+    and working buffers) and `mem_total` is the GPU's recommended working-set size (the wired limit).  Load,
+    temperature and power stay None: they are not readable without privileges, and a guess would be worse than an
+    honest dash.  Only used when MLX is importable (the mlx backend); otherwise the server falls back to NVML/None."""
+
+    def __init__(self, index=0):
+        self.mx = None
+        try:
+            import mlx.core as mx
+            info = mx.device_info()
+            mx.get_active_memory()                      # touches the device; raises if there is no Metal GPU
+            self.mx, self.info = mx, info
+            self.name_str = info.get("device_name") or "Apple GPU"
+        except Exception:                               # no mlx, no Metal, a CPU-only build: not this reader
+            self.mx = None
+
+    def ok(self):
+        return self.mx is not None
+
+    def name(self):
+        return f"{self.name_str} (Apple GPU)"
+
+    def read(self):
+        out = {"util": None, "temp": None, "power": None, "power_limit": None,
+               "pcie_gen": None, "pcie_gen_max": None, "pcie_width": None,
+               "pcie_rx_mb": None, "pcie_tx_mb": None}
+        try:
+            out["mem_used"] = int(self.mx.get_active_memory()) + int(self.mx.get_cache_memory())
+        except Exception:
+            out["mem_used"] = None
+        total = int(self.info.get("max_recommended_working_set_size") or 0)
+        out["mem_total"] = total or None
+        return out
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), or the amdgpu sysfs files with the AMD backend (#301)."""
-    return _Amd(index) if amd else _Nvml(index)
+    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or MLX's own numbers
+    on Apple Silicon."""
+    if amd:
+        return _Amd(index)
+    if sys.platform == "darwin" and platform.machine() in ("arm64", "aarch64"):
+        apple = _Apple(index)
+        if apple.ok():
+            return apple
+    return _Nvml(index)
 
 
 def free_vram_mib(index=0, amd=False):
@@ -206,6 +250,16 @@ def _cpu_name():
             k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
             return winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
         except OSError:
+            pass
+    elif sys.platform == "darwin":                    # Apple Silicon: platform.processor() is just "arm"
+        try:
+            import subprocess
+            out = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                 capture_output=True, text=True, timeout=3)
+            name = out.stdout.strip()
+            if name:
+                return name
+        except (OSError, subprocess.SubprocessError):
             pass
     elif os.path.exists("/proc/cpuinfo"):
         for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):

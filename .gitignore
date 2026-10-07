@@ -61,3 +61,13 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# macOS / Apple Silicon (MLX backend, docs/MACOS_MLX.md)
+.DS_Store
+.playwright-mcp/
+
+# The MLX backend ships one example run config per model (setup-generated files are ignored above); run-macos.sh
+# is a generic launcher, not a per-user generated script.
+!/strata-qwen25-7b-1m.json
+!/strata-qwen25-7b-1m-256k.json
+!/run-macos.sh

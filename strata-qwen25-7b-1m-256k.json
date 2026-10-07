@@ -1,0 +1,11 @@
+{
+  "model": "mlx-community/Qwen2.5-7B-Instruct-1M-4bit",
+  "context": 262144,
+  "kv_bits": 4,
+  "kv_group_size": 64,
+  "quantized_kv_start": 4096,
+  "prefill_step_size": 1024,
+  "model_name": "qwen2.5-7b-1m-256k",
+  "aliases": ["qwen2.5-7b-256k"],
+  "host": "127.0.0.1"
+}

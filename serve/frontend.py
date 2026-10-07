@@ -35,7 +35,7 @@ class TemplateRequestError(jinja2.exceptions.TemplateError, ValueError):
 class ChatTemplate:
     """The model's chat template, rendered with the same Jinja settings as transformers' apply_chat_template."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path | None = None, source: str | None = None):
         def raise_exception(message):
             raise TemplateRequestError(message)
 
@@ -45,7 +45,14 @@ class ChatTemplate:
         env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
-        self.source = Path(path).read_text(encoding="utf-8")
+        # `source`: a template string (a GGUF/safetensors model's own `chat_template`, read by a backend), else the
+        # built-in/pack template file at `path`.  A backend passes the string so nothing is written to disk.
+        if source is not None:
+            self.source = source
+        elif path is not None:
+            self.source = Path(path).read_text(encoding="utf-8")
+        else:
+            raise ValueError("ChatTemplate needs a path or a source")
         self.template = env.from_string(self.source)
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
@@ -550,11 +557,36 @@ def forced_call(tool_choice, tools: list[dict] | None) -> str | None:
     return None
 
 
+def _parse_json_tool_call(body: str) -> ToolCall:
+    """`{"name": NAME, "arguments": {...}}` (Qwen2.5 and other JSON-format models inside <tool_call>) -> ToolCall.
+    `arguments` may be a JSON object or (some fine-tunes) a JSON string."""
+    try:
+        data = json.loads(body)
+    except ValueError as e:
+        raise ValueError("malformed JSON tool call: " + body[:80]) from e
+    if not isinstance(data, dict):
+        raise ValueError("a tool call must be a JSON object: " + body[:80])
+    name = data.get("name")
+    if not isinstance(name, str) or not name:
+        raise ValueError("a tool call needs a string \"name\": " + body[:80])
+    args = data.get("arguments", {})
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {"value": args}
+    if not isinstance(args, dict):
+        args = {"value": args}
+    return ToolCall(name=name, arguments=args)
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
-    """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
-    when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
-    objects/arrays/numbers/booleans)."""
+    """A tool call body -> ToolCall.  Two formats: Strata's XML (`<function=NAME>\\n<parameter=P>\\nVALUE\\n
+    </parameter>...</function>`, values JSON-decoded by the schema) and the JSON form a model like Qwen2.5 writes
+    (`{"name": ..., "arguments": {...}}`)."""
     body = body.strip()
+    if body.startswith("{"):
+        return _parse_json_tool_call(body)
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
     name = body[len("<function="):body.index(">")]
@@ -884,11 +916,12 @@ class OutputParser:
                 # it is prose that names the format ("I'll use a <tool_call> block") - content, not a malformed call
                 # that ends the request.  Until its follower has arrived it is held, like a partial tag.
                 after = self.buf[i + len(CALL_START):].lstrip()
-                if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after):
+                json_form = after.startswith("{")     # Qwen2.5 and other JSON-format models
+                if after and not after.startswith(FUNC_START) and not FUNC_START.startswith(after) and not json_form:
                     out.append(Event("content", self._track(self.buf[:i + len(CALL_START)])))
                     self.buf = self.buf[i + len(CALL_START):]
                     continue
-                if not after.startswith(FUNC_START):
+                if not after.startswith(FUNC_START) and not json_form:
                     j = i
                     while j > 0 and self.buf[j - 1] == "\n":
                         j -= 1
@@ -914,8 +947,12 @@ class OutputParser:
                     return out
                 body = self.buf[:i]
                 self.buf = self.buf[i + len(CALL_END):]
-                name = body.strip()[len("<function="):].split(">", 1)[0]
-                call = parse_tool_call(body, self.schemas.get(name))
+                stripped = body.strip()
+                if stripped.startswith("{"):
+                    call = parse_tool_call(stripped)          # JSON form: no schema needed
+                else:
+                    name = stripped[len("<function="):].split(">", 1)[0]
+                    call = parse_tool_call(body, self.schemas.get(name))
                 if self.scall is not None:
                     call.id = self.scall.id
                 out.append(Event("tool_call", call=call))

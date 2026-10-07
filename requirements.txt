@@ -13,6 +13,8 @@ cmake==4.4.3
 ninja==1.13.2
 pillow==12.3.0
 psutil==7.2.2
+# serve/v1/extract: an attached PDF's text, for the web app (pure Python; only imported when a PDF is sent)
+pypdf==6.19.0
 
 # their dependencies
 markupsafe==3.0.3

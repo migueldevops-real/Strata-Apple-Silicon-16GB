@@ -1,7 +1,5 @@
 <h1 align="center">Strata</h1>
 
-**English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
-
 <p align="center"><b>Run a 125-billion-parameter AI model on your own gaming PC</b><br>
 NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open source</p>
 
@@ -12,6 +10,13 @@ NVIDIA or AMD graphics card (12 GB or more) · Windows or Linux · free and open
 Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next)** on a normal PC. This is a
 large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
 and coding agents. Nothing leaves your PC.
+
+> **Apple Silicon fork.** This fork adds a second backend that runs a small/medium quantized model on a Mac through
+> **MLX** (`--engine mlx`) behind the same server, web app and API.  It does not run the 125B model.  What it adds,
+> over upstream: a backend registry (`serve/backends/`, `mlx.py` + a Hugging Face tokenizer adapter), quantized KV
+> with cross-turn prefix reuse, **PDF attachments**, **JSON tool calling** (OpenAI `tool_calls` / Anthropic
+> `tool_use` / MCP), Apple Silicon readings in the **Monitor**, a **menu bar icon** (`install-menubar.sh`), macOS
+> install/run scripts and example configs.  Details and measured limits: [docs/MACOS_MLX.md](docs/MACOS_MLX.md).
 
 ## How fast is it?
 
@@ -67,6 +72,8 @@ Experimental, written and tested by community members on their own machines:
 - **Older graphics cards** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT): [Older GPUs](docs/OLDER_GPUS.md).
 - **Intel Arc**, built from source on Linux: [Intel Arc](docs/INTEL_ARC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, built from source on Linux: [Strix Halo](docs/STRIX_HALO.md).
+- **Apple Silicon (MLX)**: run a small/medium quantized GGUF or Hugging Face model in-process through the same
+  server, web app and API. It does not run the original 125B model (too large for unified memory). [Apple Silicon](docs/MACOS_MLX.md).
 - **Older processors without AVX2**: they work, but slowly. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
