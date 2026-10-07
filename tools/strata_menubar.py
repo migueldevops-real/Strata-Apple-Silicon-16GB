@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -23,6 +24,7 @@ PORT = int(os.environ.get("STRATA_PORT", "8080"))
 CONFIG = os.environ.get("STRATA_CONFIG", "strata-qwen25-7b-1m.json")
 BASE = f"http://127.0.0.1:{PORT}"
 LOG = ROOT / f"{Path(CONFIG).stem}.log"
+STATUS = ROOT / "strata-status.json"      # the server writes loading -> warming -> ready while it starts
 
 try:
     import rumps
@@ -128,16 +130,26 @@ class StrataMenubar(rumps.App):
         rumps.quit_application()
 
     # ---- state ---------------------------------------------------------------------------------------
+    @staticmethod
+    def _phase():
+        """The server's startup phase from its status file ("loading", "warming" or "ready"), or None if there is
+        no recent one.  It only matters while /health is not answering yet."""
+        try:
+            data = json.loads(STATUS.read_text(encoding="utf-8"))
+            if time.time() - float(data.get("at", 0)) < 600:
+                return data.get("phase")
+        except (OSError, ValueError):
+            pass
+        return None
+
     def _tick(self, _):
         h = _health()
         if h:
             state = f"{h.get('model', '?')} · {int(h.get('max_context', 0)) // 1000}K"
-            if not self._icon:
-                self.title = "Strata"
         else:
-            state = "stopped"
-            if not self._icon:
-                self.title = "Strata (stopped)"
+            state = {"loading": "starting…", "warming": "warming up…"}.get(self._phase() or "", "stopped")
+        if not self._icon:
+            self.title = f"Strata ({state})" if state == "stopped" else "Strata"
         self.state_item.title = f"Strata — {state}"
 
 

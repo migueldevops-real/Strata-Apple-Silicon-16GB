@@ -4842,6 +4842,18 @@ def main() -> int:
                          "conversation the engine holds, to or from DIR/NAME (also \"slot_save_path\" in the config)")
     a = ap.parse_args()
     cfg = json.loads(Path(a.config).read_text(encoding="utf-8-sig")) if a.config else {}   # Notepad adds a BOM
+    # A small status file next to the run config: "loading" -> "warming" -> "ready".  The menu bar icon reads it to
+    # say "starting..."/"warming up..." while the model loads (the HTTP server only answers after that).
+    status_file = ROOT / "strata-status.json"
+
+    def _status(phase: str, **extra) -> None:
+        try:
+            status_file.write_text(json.dumps({"phase": phase, "pid": os.getpid(), "at": time.time(), **extra}))
+        except OSError:
+            pass
+
+    os.environ["STRATA_STATUS_FILE"] = str(status_file)
+    _status("loading")
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
@@ -5029,6 +5041,7 @@ def main() -> int:
         hub.start()
         atexit.register(hub.close)                      # the servers Strata started end with it
     httpd = serve(svc, host=a.host, port=a.port)
+    _status("ready", port=a.port, model=svc.model)
     svc.start_idle_unload()
     here = "127.0.0.1" if a.host in ("0.0.0.0", "", "::") else a.host
     print(f"ready: http://{here}:{a.port}/v1  (OpenAI: /v1/chat/completions, Anthropic: /v1/messages, "

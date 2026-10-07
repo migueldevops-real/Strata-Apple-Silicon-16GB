@@ -119,7 +119,9 @@ It also runs `strata-menubar.command` (double-click) for a one-off start without
 (`tools/strata_menubar.py`, needs `rumps`, installed by `setup-macos.sh`) shows whether the model is loaded and lets
 you open the web app and start/stop/restart the server without a terminal:
 
-- the status line reads `Strata — <model> · <context>` when it is up, `Strata — stopped` when it is not;
+- the status line reads `Strata — <model> · <context>` when it is up, `Strata — stopped` when it is not, and
+  `Strata — starting…` / `Strata — warming up…` while the server loads the model and runs the `warmup` (it follows
+  the server's `strata-status.json`);
 - **Open the web app**, **Start**, **Stop**, **Restart**, **Quit**.
 
 It only talks HTTP (`/health`) and starts the server as a child process; it never loads the model in the icon

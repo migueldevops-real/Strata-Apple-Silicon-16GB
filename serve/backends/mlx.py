@@ -20,6 +20,8 @@ does not already carry the long-context rope.
 """
 from __future__ import annotations
 
+import json
+import os
 import platform
 import time
 
@@ -283,6 +285,18 @@ def _apply_rope_scaling(model, scaling) -> None:
         print(f"[strata] could not apply rope_scaling {scaling!r}: {e}", flush=True)
 
 
+def _status(phase: str) -> None:
+    """Update the startup status file the menu bar icon reads (set by serve/server.py's main).  Best effort."""
+    path = os.environ.get("STRATA_STATUS_FILE")
+    if not path:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"phase": phase, "pid": os.getpid(), "at": time.time()}, f)
+    except OSError:
+        pass
+
+
 def _warmup(engine, tok) -> None:
     """One short generation at startup, so MLX compiles its Metal kernels and allocates the KV/workspace now,
     instead of on the first chat (whose first token is otherwise much slower).  A failure is a warning, never a
@@ -290,6 +304,7 @@ def _warmup(engine, tok) -> None:
     import threading
     import time
     started = time.monotonic()
+    _status("warming")
     try:
         ids = tok.encode("Warm up the model before the first request.", parse_special=False)
         for _ in engine.generate(ids, 1, {"temperature": 0.0}, threading.Event()):
